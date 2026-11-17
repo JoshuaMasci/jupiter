@@ -37,7 +37,7 @@ drawMesh :: proc(render_pass: ^sdl3.GPURenderPass, mesh: Mesh) {
 	}
 
 	sdl3.BindGPUVertexBuffers(render_pass, 0, &vertex_binding, 1)
-	sdl3.BindGPUIndexBuffer(render_pass, {buffer = mesh.vertex_buffer}, ._32BIT)
+	sdl3.BindGPUIndexBuffer(render_pass, {buffer = mesh.index_buffer}, ._32BIT)
 	sdl3.DrawGPUIndexedPrimitives(render_pass, mesh.index_count, 1, 0, 0, 0)
 }
 

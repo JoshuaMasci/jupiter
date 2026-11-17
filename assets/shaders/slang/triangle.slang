@@ -15,12 +15,12 @@ struct VSOutput {
 };
 
 [shader("vertex")]
-VSOutput vertex(uint vertexID: SV_VertexID) {
+VSOutput vertexMain(uint vertexID: SV_VertexID) {
     float4 position_cs = mul(vert_data.mvp_matrix, float4(positions[vertexID], 0, 1));
     return VSOutput(position_cs, colors[vertexID]);
 }
 
 [shader("fragment")]
-float4 fragment(float3 color: VertexColor) : SV_Target {
+float4 fragmentMain(float3 color: VertexColor) : SV_Target {
   return float4(color.rgb, 1.0);
 }

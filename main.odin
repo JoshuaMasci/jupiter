@@ -75,8 +75,11 @@ main :: proc() {
 	assert(sdl3.ClaimWindowForGPUDevice(gpu, window), "Failed to claim window")
 	defer sdl3.ReleaseWindowFromGPUDevice(gpu, window)
 
-	triangle_pipeline := createPipeline(gpu, window)
+	triangle_pipeline := createTrianglePipeline(gpu, window)
 	defer sdl3.ReleaseGPUGraphicsPipeline(gpu, triangle_pipeline)
+
+	mesh_pipeline := createMeshPipeline(gpu, window)
+	defer sdl3.ReleaseGPUGraphicsPipeline(gpu, mesh_pipeline)
 
 	cube_mesh, ok := render.importGltfMesh(gpu, "./assets/models/cube.glb")
 	defer render.deinitMesh(gpu, cube_mesh)
@@ -133,11 +136,11 @@ main :: proc() {
 			)
 		}
 
-		cmdBuf := sdl3.AcquireGPUCommandBuffer(gpu)
+		cmd_buf := sdl3.AcquireGPUCommandBuffer(gpu)
 		window_texture: ^sdl3.GPUTexture
 		window_size: [2]u32
 		got_win_tex := sdl3.WaitAndAcquireGPUSwapchainTexture(
-			cmdBuf,
+			cmd_buf,
 			window,
 			&window_texture,
 			&window_size[0],
@@ -151,9 +154,7 @@ main :: proc() {
 			load_op     = .CLEAR,
 			store_op    = .STORE,
 		}
-		renderPass := sdl3.BeginGPURenderPass(cmdBuf, &colorTarget, 1, nil)
-
-		sdl3.BindGPUGraphicsPipeline(renderPass, triangle_pipeline)
+		render_pass := sdl3.BeginGPURenderPass(cmd_buf, &colorTarget, 1, nil)
 
 		model_matrix := calcModelMatrix(model_transform)
 		view_matrix := calcViewMatrix(camera_transform)
@@ -166,21 +167,36 @@ main :: proc() {
 			projection_matrix,
 			linalg.matrix_mul(view_matrix, model_matrix),
 		)
-		sdl3.PushGPUVertexUniformData(cmdBuf, 0, &mvp_matrix, size_of(mvp_matrix))
-		sdl3.DrawGPUPrimitives(renderPass, 3, 1, 0, 0)
 
-		sdl3.EndGPURenderPass(renderPass)
-		submit_ok := sdl3.SubmitGPUCommandBuffer(cmdBuf)
+		{
+			sdl3.BindGPUGraphicsPipeline(render_pass, triangle_pipeline)
+			sdl3.PushGPUVertexUniformData(cmd_buf, 0, &mvp_matrix, size_of(mvp_matrix))
+			sdl3.DrawGPUPrimitives(render_pass, 3, 1, 0, 0)
+		}
+
+		{
+			sdl3.BindGPUGraphicsPipeline(render_pass, mesh_pipeline)
+			sdl3.PushGPUVertexUniformData(cmd_buf, 0, &mvp_matrix, size_of(mvp_matrix))
+			render.drawMesh(render_pass, cube_mesh)
+		}
+
+
+		sdl3.EndGPURenderPass(render_pass)
+		submit_ok := sdl3.SubmitGPUCommandBuffer(cmd_buf)
 	}
 }
 
-createPipeline :: proc(gpu: ^sdl3.GPUDevice, window: ^sdl3.Window) -> ^sdl3.GPUGraphicsPipeline {
+createTrianglePipeline :: proc(
+	gpu: ^sdl3.GPUDevice,
+	window: ^sdl3.Window,
+	depth_format: Maybe(sdl3.GPUTextureFormat) = nil,
+) -> ^sdl3.GPUGraphicsPipeline {
 	spirvCode := #load("cache/shaders/slang/triangle.spv")
 
 	vertexShaderCreateInfo := sdl3.GPUShaderCreateInfo {
 		code                 = raw_data(spirvCode),
 		code_size            = len(spirvCode),
-		entrypoint           = "vertex",
+		entrypoint           = "vertexMain",
 		format               = {.SPIRV},
 		stage                = .VERTEX,
 		num_samplers         = 0,
@@ -194,7 +210,7 @@ createPipeline :: proc(gpu: ^sdl3.GPUDevice, window: ^sdl3.Window) -> ^sdl3.GPUG
 	fragmentShaderCreateInfo := sdl3.GPUShaderCreateInfo {
 		code                 = raw_data(spirvCode),
 		code_size            = len(spirvCode),
-		entrypoint           = "fragment",
+		entrypoint           = "fragmentMain",
 		format               = {.SPIRV},
 		stage                = .FRAGMENT,
 		num_samplers         = 0,
@@ -213,11 +229,96 @@ createPipeline :: proc(gpu: ^sdl3.GPUDevice, window: ^sdl3.Window) -> ^sdl3.GPUG
 		target_info = sdl3.GPUGraphicsPipelineTargetInfo {
 			num_color_targets = u32(len(colorTargetDesc)),
 			color_target_descriptions = raw_data(&colorTargetDesc),
+			depth_stencil_format = depth_format.? or_else .INVALID,
+			has_depth_stencil_target = depth_format != nil,
 		},
 		primitive_type = .TRIANGLELIST,
 		vertex_shader = vertex_shader,
 		fragment_shader = fragment_shader,
 		rasterizer_state = {fill_mode = .FILL, cull_mode = .NONE},
+	}
+
+	return sdl3.CreateGPUGraphicsPipeline(gpu, pipelineCreateInfo)
+}
+
+createMeshPipeline :: proc(
+	gpu: ^sdl3.GPUDevice,
+	window: ^sdl3.Window,
+) -> ^sdl3.GPUGraphicsPipeline {
+	spirvCode := #load("cache/shaders/slang/mesh.spv")
+
+	vertexShaderCreateInfo := sdl3.GPUShaderCreateInfo {
+		code                 = raw_data(spirvCode),
+		code_size            = len(spirvCode),
+		entrypoint           = "vertexMain",
+		format               = {.SPIRV},
+		stage                = .VERTEX,
+		num_samplers         = 0,
+		num_uniform_buffers  = 1,
+		num_storage_buffers  = 0,
+		num_storage_textures = 0,
+	}
+	vertex_shader := sdl3.CreateGPUShader(gpu, vertexShaderCreateInfo)
+	defer sdl3.ReleaseGPUShader(gpu, vertex_shader)
+
+	fragmentShaderCreateInfo := sdl3.GPUShaderCreateInfo {
+		code                 = raw_data(spirvCode),
+		code_size            = len(spirvCode),
+		entrypoint           = "fragmentMain",
+		format               = {.SPIRV},
+		stage                = .FRAGMENT,
+		num_samplers         = 0,
+		num_uniform_buffers  = 0,
+		num_storage_buffers  = 0,
+		num_storage_textures = 0,
+	}
+	fragment_shader := sdl3.CreateGPUShader(gpu, fragmentShaderCreateInfo)
+	defer sdl3.ReleaseGPUShader(gpu, fragment_shader)
+
+	vertex_buffers := [1]sdl3.GPUVertexBufferDescription {
+		{slot = 0, pitch = size_of(render.Vertex), input_rate = .VERTEX, instance_step_rate = 0},
+	}
+
+	vertex_attributes := [3]sdl3.GPUVertexAttribute {
+		{
+			location = 0,
+			buffer_slot = 0,
+			format = .FLOAT3,
+			offset = u32(offset_of(render.Vertex, position)),
+		},
+		{
+			location = 1,
+			buffer_slot = 0,
+			format = .FLOAT3,
+			offset = u32(offset_of(render.Vertex, normal)),
+		},
+		{
+			location = 2,
+			buffer_slot = 0,
+			format = .FLOAT2,
+			offset = u32(offset_of(render.Vertex, uv0)),
+		},
+	}
+
+	colorTargetDesc := [1]sdl3.GPUColorTargetDescription {
+		{format = sdl3.GetGPUSwapchainTextureFormat(gpu, window)},
+	}
+
+	pipelineCreateInfo := sdl3.GPUGraphicsPipelineCreateInfo {
+		target_info = sdl3.GPUGraphicsPipelineTargetInfo {
+			num_color_targets = u32(len(colorTargetDesc)),
+			color_target_descriptions = raw_data(&colorTargetDesc),
+		},
+		primitive_type = .TRIANGLELIST,
+		vertex_shader = vertex_shader,
+		fragment_shader = fragment_shader,
+		rasterizer_state = {fill_mode = .FILL, front_face = .COUNTER_CLOCKWISE, cull_mode = .BACK},
+		vertex_input_state = {
+			vertex_buffer_descriptions = raw_data(&vertex_buffers),
+			num_vertex_buffers = len(vertex_buffers),
+			vertex_attributes = raw_data(&vertex_attributes),
+			num_vertex_attributes = len(vertex_attributes),
+		},
 	}
 
 	return sdl3.CreateGPUGraphicsPipeline(gpu, pipelineCreateInfo)
